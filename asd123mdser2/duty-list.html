@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Hospital Duty Planner</title>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-populate/browser/xlsx-populate.min.js"></script>
+  <script type ="text/javascript">
+    function getNextMonday() {
+        const today = new Date();
+        const dayOfWeek = today.getDay(); // Sunday = 0, Monday = 1, ..., Saturday = 6
+
+        // Calculate how many days to add to get to next Monday
+        // If today's dayOfWeek is 1 (Monday), we still want the *next* Monday, so add 7.
+        const daysUntilNextMonday = ((1 + 7 - dayOfWeek) % 7) || 7;
+
+        // Clone today's date object
+        const nextMonday = new Date(today);
+        nextMonday.setDate(today.getDate() + daysUntilNextMonday);  
+        return nextMonday;
+    }
+
+    function addDaysAndFormatDDMM (baseDate, daysToAdd) {
+      const d = new Date(baseDate); // Make a copy
+      d.setDate(d.getDate() + daysToAdd);
+      return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+  </script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 10px;
+      padding: 10px;
+    }
+    h1 {
+      margin-bottom: 20px;
+    }
+    .container {
+      display: flex;
+      gap: 20px;
+    }
+    .left-panel {
+      width: 250px;
+      border: 1px solid #ccc;
+      padding: 10px;
+      overflow-y: auto;
+      max-height: 600px;
+    }
+    .category-title {
+      font-weight: bold;
+      margin-top: 10px;
+      margin-bottom: 5px;
+    }
+    .doctor-row {
+      display: flex;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+    .doctor-row input[type="checkbox"] {
+      margin-right: 6px;
+      transform: scale(1.2);
+    }
+    .doctor-item {
+      flex: 1;
+      background-color: #e1f5fe;
+      border: 1px solid #0288d1;
+      border-radius: 4px;
+      padding: 4px;
+      text-align: center;
+      cursor: move; /* indicates draggable */
+    }
+    /* Table styling */
+    table {
+      border-collapse: collapse;
+      min-width: 950px;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 6px;
+      text-align: center;
+      width: 90px;
+      vertical-align: top;
+    }
+    thead {
+      background-color: #f1f1f1;
+    }
+    .droppable {
+      min-height: 60px;
+    }
+    /* Doctor badge in table cell */
+    .assigned-doctor {
+      position: relative;
+      display: inline-block;
+      background-color: #fff9c4;
+      border: 1px solid #fbc02d;
+      border-radius: 4px;
+      padding: 2px 20px 2px 5px;
+      margin: 2px;
+      cursor: default;
+    }
+    .assigned-doctor .delete-btn {
+      position: absolute;
+      top: 0;
+      right: 0;
+      border: none;
+      background: none;
+      color: #f00;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    #buttonsContainer {
+      margin: 15px 0;
+    }
+    button {
+      margin-right: 10px;
+      padding: 8px 16px;
+      cursor: pointer;
+    }
+    #validationMessages {
+      margin-top: 10px;
+    }
+    .error {
+      color: red;
+      font-weight: bold;
+    }
+    .warning {
+      color: orange;
+      font-weight: bold;
+    }
+
+    /* Import section (hidden by default) */
+    #importSection {
+      margin-top: 20px;
+      display: none;
+    }
+    #importText {
+      width: 80%;
+      height: 100px;
+      margin-top: 5px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Hospital Duty Planner</h1>
+  <div class="container">
+    <!-- Left panel: Draggable doctors + checkboxes -->
+    <div class="left-panel" id="leftPanel">
+      <div><strong>Drag a doctor to the duty cells</strong></div>
+    </div>
+
+    <!-- Main panel: Duty assignment table -->
+    <div class="main-panel">
+      <table id="dutyTable">
+        <thead>
+          <tr>
+            <th>Day</th>
+            <th>Morning<br>Casuality (MC)</th>
+            <th>Afternoon<br>Casuality (AC)</th>
+            <th>Night<br>Casuality (NC)</th>
+            <th>Night Off (NO)</th>
+            <th>PM</th>
+            <th>Speciality OP</th>
+            <th>General OP</th>
+            <th>Other Duty</th>
+            <th>Week Off</th>
+            <th>Leave</th>
+          </tr>
+        </thead>
+        <tbody>
+          <!-- Rows are generated dynamically by script -->
+        </tbody>
+      </table>
+
+      <div id="buttonsContainer">
+        <button id="initBtn">Init</button>
+        <button id="validateBtn">Validate</button>
+        <button id="exportBtn">Export to JSON</button>
+        <button id="exportCsvBtn">Export to Excel</button>
+        <button id="importBtn">Import from JSON</button>
+      </div>
+
+      <div id="validationMessages"></div>
+
+      <!-- Hidden import section; shown when user clicks "Import from JSON" -->
+      <div id="importSection">
+        <div><strong>Paste your JSON below:</strong></div>
+        <textarea id="importText"></textarea><br>
+        <button id="importConfirmBtn">Confirm Import</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    /***********************************
+     * Hardcoded doctors and categories
+     ***********************************/
+    var doctorsData = {
+      "CMO": ["Dr. Sheeja", "Dr Meenakshi", "Dr Manju C", "Dr Suraj"],
+      "Speciality": ["Dr. Arun", "Dr. Anil", "Dr Sreejith", "Dr Koshy", "Dr Surekha"],
+      "Assistant Surgeon": ["Dr. Anu", "Dr. Akash", "Dr Favaz", "Dr Suby"]
+    };
+
+    /***********************************
+     * Global configurations
+     ***********************************/
+    // Days: Sunday (previous) is index 0, up to Sunday is index 7
+    const days = [
+      { name: "Sunday (Previous)", key: "sun_prev" }, // index 0
+      { name: "Monday",           key: "mon"      }, // index 1
+      { name: "Tuesday",          key: "tue"      }, // index 2
+      { name: "Wednesday",        key: "wed"      }, // index 3
+      { name: "Thursday",         key: "thu"      }, // index 4
+      { name: "Friday",           key: "fri"      }, // index 5
+      { name: "Saturday",         key: "sat"      }, // index 6
+      { name: "Sunday",           key: "sun"      }  // index 7
+    ];
+
+    // Duty types (columns)
+    const dutyTypes = [
+      { name: "MC",    label: "Morning Casuality",    singleSlot: true },
+      { name: "AC",    label: "Afternoon Casuality",  singleSlot: true },
+      { name: "NC",    label: "Night Casuality",      singleSlot: true },
+      { name: "NO",    label: "Night Off",            singleSlot: true },
+      { name: "PM",    label: "PM",                   singleSlot: true },
+      { name: "SpecOP",label: "Speciality OP",        singleSlot: false },
+      { name: "GenOP", label: "General OP",           singleSlot: false },
+      { name: "Other", label: "Other Duty",           singleSlot: false },
+      { name: "WOff",  label: "Week Off",             singleSlot: false },
+      { name: "Leave", label: "Leave",                singleSlot: false }
+    ];
+
+    // Which category can do which duty?
+    const categoryToAllowedDuties = {
+      "CMO": ["MC", "AC", "NC", "NO", "GenOP", "Other", "WOff", "Leave", "PM"],
+      "Speciality": ["SpecOP", "PM", "WOff", "Leave"],
+      "Assistant Surgeon": ["MC", "AC", "NC", "NO", "GenOP", "Other", "WOff", "Leave", "PM"]
+    };
+
+    // We'll store assignments in an object: assignments[dayKey][dutyName] = [ doctors... ]
+    let assignments = {};
+
+    /***********************************
+     * Functions: isRequired / isProhibited
+     ***********************************/
+    function isRequired(dutyName, dayKey) {
+      // MC, AC, NC, NO, PM => required daily (Mon-Sun)
+      if (["MC","AC","NC","NO","PM"].includes(dutyName)) {
+        return true;
+      }
+      // SpecOP / GenOP => required Monday-Saturday, prohibited on Sunday / Sunday(prev)
+      if (["SpecOP","GenOP"].includes(dutyName)) {
+        if (dayKey !== "sun" && dayKey !== "sun_prev") {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    function isProhibited(dutyName, dayKey) {
+      if (["SpecOP","GenOP"].includes(dutyName)) {
+        if (dayKey === "sun" || dayKey === "sun_prev") {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    /***********************************
+     * Initialization
+     ***********************************/
+    function init() {
+      initAssignments();
+      buildLeftPanel();
+      buildDutyTable();
+      updateTableFromAssignments();
+    }
+
+    function initAssignments() {
+      days.forEach(day => {
+        assignments[day.key] = {};
+        dutyTypes.forEach(duty => {
+          assignments[day.key][duty.name] = [];
+        });
+      });
+    }
+
+    // Build the left panel with checkboxes + doc items
+    function buildLeftPanel() {
+      const leftPanel = document.getElementById("leftPanel");
+      leftPanel.innerHTML = "";
+
+      for (const category in doctorsData) {
+        const catDiv = document.createElement("div");
+        catDiv.className = "category-title";
+        catDiv.textContent = category;
+        leftPanel.appendChild(catDiv);
+
+        doctorsData[category].forEach(docName => {
+          const rowDiv = document.createElement("div");
+          rowDiv.className = "doctor-row";
+
+          // Checkbox (checked by default)
+          const cb = document.createElement("input");
+          cb.type = "checkbox";
+          cb.checked = true; // default
+          cb.setAttribute("data-doc", docName);
+          cb.setAttribute("data-cat", category);
+
+          // Draggable doc item
+          const doctorItem = document.createElement("div");
+          doctorItem.className = "doctor-item";
+          doctorItem.textContent = docName;
+
+          doctorItem.setAttribute("draggable", "true");
+          doctorItem.addEventListener("dragstart", (e) => {
+            e.dataTransfer.setData("text/plain", JSON.stringify({
+              doctorName: docName,
+              category: category
+            }));
+          });
+
+          rowDiv.appendChild(cb);
+          rowDiv.appendChild(doctorItem);
+          leftPanel.appendChild(rowDiv);
+        });
+      }
+    }
+
+    function buildDutyTable() {
+      const tbody = document.querySelector("#dutyTable tbody");
+      tbody.innerHTML = "";
+
+      days.forEach(day => {
+        const row = document.createElement("tr");
+        // Day label cell
+        const dayCell = document.createElement("td");
+        dayCell.textContent = day.name;
+        row.appendChild(dayCell);
+
+        // For each duty
+        dutyTypes.forEach(duty => {
+          const cell = document.createElement("td");
+          cell.classList.add("droppable");
+          cell.setAttribute("data-day", day.key);
+          cell.setAttribute("data-duty", duty.name);
+
+          cell.addEventListener("dragover", handleDragOver);
+          cell.addEventListener("drop", handleDrop);
+
+          row.appendChild(cell);
+        });
+
+        tbody.appendChild(row);
+      });
+    }
+
+    function updateTableFromAssignments() {
+      // Clear existing
+      const allCells = document.querySelectorAll("td.droppable");
+      allCells.forEach(cell => {
+        cell.innerHTML = "";
+      });
+
+      for (let dayKey in assignments) {
+        for (let dutyName in assignments[dayKey]) {
+          const docList = assignments[dayKey][dutyName];
+          const cell = findCell(dayKey, dutyName);
+          if (cell) {
+            docList.forEach(docName => {
+              addDoctorBadge(cell, docName, dayKey, dutyName);
+            });
+          }
+        }
+      }
+    }
+
+    /***********************************
+     * Drag and Drop
+     ***********************************/
+    function handleDragOver(e) {
+      e.preventDefault();
+    }
+
+    function handleDrop(e) {
+      e.preventDefault();
+      const data = e.dataTransfer.getData("text/plain");
+      if (!data) return;
+
+      const { doctorName } = JSON.parse(data);
+      const dayKey = this.getAttribute("data-day");
+      const dutyName = this.getAttribute("data-duty");
+
+      const dutyConf = dutyTypes.find(d => d.name === dutyName);
+      if (!dutyConf) return;
+
+      // SingleSlot check
+      if (dutyConf.singleSlot && assignments[dayKey][dutyName].length >= 1) {
+        alert("Only one doctor can be assigned to " + dutyConf.label + " per day.");
+        return;
+      }
+
+      // Check if doctor is already assigned that day
+      const assignedDutiesThisDay = assignments[dayKey];
+      for (let dN in assignedDutiesThisDay) {
+        if (assignedDutiesThisDay[dN].includes(doctorName)) {
+          alert(doctorName + " is already assigned on this day in " + dN + ". Remove first if you want to reassign.");
+          return;
+        }
+      }
+
+      // Add to assignments
+      assignments[dayKey][dutyName].push(doctorName);
+      addDoctorBadge(this, doctorName, dayKey, dutyName);
+
+      // Auto-assign next day NO if dropping on NC
+      if (dutyName === "NC") {
+        const currentDayIndex = days.findIndex(d => d.key === dayKey);
+        if (currentDayIndex >= 0 && currentDayIndex < days.length - 1) {
+          const nextDayKey = days[currentDayIndex + 1].key;
+          const nextDayNOAssignments = assignments[nextDayKey]["NO"] || [];
+          if (nextDayNOAssignments.length === 0) {
+            // Check if doc is free next day
+            const nextDayAllDuties = assignments[nextDayKey];
+            let alreadyAssignedNextDay = false;
+            for (let dN in nextDayAllDuties) {
+              if (nextDayAllDuties[dN].includes(doctorName)) {
+                alreadyAssignedNextDay = true;
+                break;
+              }
+            }
+            if (!alreadyAssignedNextDay) {
+              nextDayNOAssignments.push(doctorName);
+              const nextDayCell = findCell(nextDayKey, "NO");
+              if (nextDayCell) {
+                addDoctorBadge(nextDayCell, doctorName, nextDayKey, "NO");
+              }
+            }
+          }
+        }
+      }
+    }
+
+    function addDoctorBadge(cell, doctorName, dayKey, dutyName) {
+      const badge = document.createElement("div");
+      badge.className = "assigned-doctor";
+      badge.textContent = doctorName;
+
+      const delBtn = document.createElement("button");
+      delBtn.textContent = "x";
+      delBtn.className = "delete-btn";
+      delBtn.addEventListener("click", () => {
+        removeDoctor(dayKey, dutyName, doctorName);
+      });
+      badge.appendChild(delBtn);
+
+      cell.appendChild(badge);
+    }
+
+    function removeDoctor(dayKey, dutyName, doctorName) {
+      const arr = assignments[dayKey][dutyName];
+      const idx = arr.indexOf(doctorName);
+      if (idx > -1) {
+        arr.splice(idx, 1);
+      }
+      const cell = findCell(dayKey, dutyName);
+      if (cell) {
+        Array.from(cell.getElementsByClassName("assigned-doctor")).forEach(badge => {
+          if (badge.textContent.replace("x", "").trim() === doctorName) {
+            cell.removeChild(badge);
+          }
+        });
+      }
+    }
+
+    function findCell(dayKey, dutyName) {
+      const selector = `td.droppable[data-day='${dayKey}'][data-duty='${dutyName}']`;
+      return document.querySelector(selector);
+    }
+
+    /***********************************
+     * INIT BUTTON LOGIC
+     ***********************************/
+    document.getElementById("initBtn").addEventListener("click", () => {
+      // Clear existing assignments
+      initAssignments();
+
+      // For each doc, read the checkbox
+      const checkboxes = document.querySelectorAll("input[type='checkbox'][data-doc]");
+      checkboxes.forEach(cb => {
+        const docName = cb.getAttribute("data-doc");
+        const cat = cb.getAttribute("data-cat");
+
+        // If unchecked => assign "Leave" for all 8 days (sun_prev..sun)
+        if (!cb.checked) {
+          days.forEach((d) => {
+            assignments[d.key]["Leave"].push(docName);
+          });
+        } else {
+          // If checked:
+          //  - All doctors => WOff on previous Sunday (day 0) & Sunday (day 7)
+          assignments["sun_prev"]["WOff"].push(docName);
+          assignments["sun"]["WOff"].push(docName);
+
+          //  - If Speciality => assign SpecOP for Monday..Saturday (day indices 1..6)
+          if (cat === "Speciality") {
+            for (let i = 1; i <= 6; i++) {
+              const dayKey = days[i].key; 
+              assignments[dayKey]["SpecOP"].push(docName);
+            }
+          }
+          // If CMO or Assistant Surgeon, do nothing else for Mon..Sat (left for manual).
+        }
+      });
+
+      // Reflect in table
+      updateTableFromAssignments();
+    });
+
+    /***********************************
+     * Validation
+     ***********************************/
+    document.getElementById("validateBtn").addEventListener("click", validateAssignments);
+
+    function validateAssignments() {
+      const errors = [];
+      const warnings = [];
+
+      const nightCounts = {};
+      const weekOffCounts = {};
+      const hasSundayPrevDuty = {};
+      const hasSundayThisDuty = {};
+
+      // doc->category
+      const docCategoryMap = {};
+      for (let cat in doctorsData) {
+        doctorsData[cat].forEach(d => {
+          docCategoryMap[d] = cat;
+        });
+      }
+
+      // We'll track doc->(day->boolean) for Monday..Sunday 
+      // ignoring "sun_prev" in daily assignment checks
+      const docDayAssignments = {};
+      Object.keys(docCategoryMap).forEach(doc => {
+        docDayAssignments[doc] = {};
+        // Only track days 1..7 (Mon..Sun) for "every day" check
+        for (let i = 1; i <= 7; i++) {
+          docDayAssignments[doc][days[i].key] = false;
+        }
+      });
+
+      // Go day by day
+      days.forEach((day, dIndex) => {
+        const dayKey = day.key;
+        const dayAssignments = assignments[dayKey];
+
+        dutyTypes.forEach(duty => {
+          const docList = dayAssignments[duty.name];
+
+          // Check prohibited
+          if (isProhibited(duty.name, dayKey) && docList.length > 0) {
+            errors.push(`${duty.label} is not allowed on ${day.name}, but has assigned doctor(s).`);
+          }
+
+          // Check required
+          if (isRequired(duty.name, dayKey) && docList.length === 0) {
+            errors.push(`No doctor assigned for required duty ${duty.label} on ${day.name}.`);
+          }
+
+          // For each assigned doc
+          docList.forEach(doc => {
+            // If day is not "sun_prev", mark them as assigned
+            if (dIndex >= 1) {
+              // Mark doc as assigned on this day
+              docDayAssignments[doc][dayKey] = true;
+            }
+
+            // If it's Sunday(prev) or Sunday, and the duty is not WOff/Leave => track for Sunday-Sunday check
+            if (dayKey === "sun_prev" && duty.name !== "WOff" && duty.name !== "Leave") {
+              hasSundayPrevDuty[doc] = true;
+            }
+            if (dayKey === "sun" && duty.name !== "WOff" && duty.name !== "Leave") {
+              hasSundayThisDuty[doc] = true;
+            }
+
+            // Count nights
+            if (duty.name === "NC") {
+              nightCounts[doc] = (nightCounts[doc] || 0) + 1;
+            }
+            // Count WOff
+            if (duty.name === "WOff") {
+              weekOffCounts[doc] = (weekOffCounts[doc] || 0) + 1;
+            }
+
+            // Check if doc is allowed to do this duty
+            const cat = docCategoryMap[doc];
+            if (cat) {
+              const allowed = categoryToAllowedDuties[cat] || [];
+              if (!allowed.includes(duty.name)) {
+                warnings.push(`${doc} (Category: ${cat}) assigned to ${duty.label} on ${day.name}, but it's not allowed for ${cat}.`);
+              }
+            }
+          });
+        });
+      });
+
+      // "Night Off" after "Night Casuality"
+      for (let i = 0; i < days.length - 1; i++) {
+        const dayA = days[i];
+        const dayB = days[i+1];
+        const dayA_NC = assignments[dayA.key].NC;
+        dayA_NC.forEach(doc => {
+          if (!assignments[dayB.key].NO.includes(doc)) {
+            errors.push(`Night Off missing for ${doc} on ${dayB.name} (after NC on ${dayA.name}).`);
+          }
+        });
+      }
+
+      // Sunday-vs-Sunday duty warning
+      for (let doc in hasSundayPrevDuty) {
+        if (hasSundayThisDuty[doc]) {
+          warnings.push(`${doc} is assigned on both previous Sunday and this Sunday.`);
+        }
+      }
+
+      // More than 2 NC => warning
+      for (let doc in nightCounts) {
+        if (nightCounts[doc] > 2) {
+          warnings.push(`${doc} has more than 2 Night Casualities (${nightCounts[doc]}).`);
+        }
+      }
+
+      // Exactly 1 WOff => otherwise error
+      for (let doc in docCategoryMap) {
+        const wCount = weekOffCounts[doc] || 0;
+        if (wCount === 0) {
+          errors.push(`${doc} has no Week Off assigned.`);
+        }
+        if (wCount > 1) {
+          errors.push(`${doc} has more than 1 Week Off assigned (${wCount}).`);
+        }
+      }
+      // A doctor should not be assigned more than 1 duty on the same day
+      days.forEach(day => {
+        const dayKey = day.key;
+        const dayAssignments = assignments[dayKey];
+        let docCountMap = {};
+        dutyTypes.forEach(duty => {
+          dayAssignments[duty.name].forEach(doc => {
+            docCountMap[doc] = (docCountMap[doc] || 0) + 1;
+          });
+        });
+        for (let doc in docCountMap) {
+          if (docCountMap[doc] > 1) {
+            errors.push(`${doc} has multiple assignments on ${day.name}.`);
+          }
+        }
+      });
+
+      // Each doc must have exactly one assignment each day from Monday..Sunday
+      for (let doc in docDayAssignments) {
+        for (let dKey in docDayAssignments[doc]) {
+          if (!docDayAssignments[doc][dKey]) {
+            // doc not assigned on that day
+            errors.push(`${doc} is not assigned any duty/WOff/Leave on ${dayNameFromKey(dKey)}.`);
+          }
+        }
+      }
+
+      // Display results
+      const validationDiv = document.getElementById("validationMessages");
+      validationDiv.innerHTML = "";
+      validationDiv.style.color = "black";
+
+      if (errors.length === 0 && warnings.length === 0) {
+        validationDiv.textContent = "No errors or warnings. Validation passed!";
+        validationDiv.style.color = "green";
+        return;
+      }
+
+      const ul = document.createElement("ul");
+      errors.forEach(err => {
+        const li = document.createElement("li");
+        li.className = "error";
+        li.textContent = "Error: " + err;
+        ul.appendChild(li);
+      });
+      warnings.forEach(warn => {
+        const li = document.createElement("li");
+        li.className = "warning";
+        li.textContent = "Warning: " + warn;
+        ul.appendChild(li);
+      });
+      validationDiv.appendChild(ul);
+    }
+
+    function dayNameFromKey(dayKey) {
+      const d = days.find(d => d.key === dayKey);
+      return d ? d.name : dayKey;
+    }
+
+    /***********************************
+     * Export / Import
+     ***********************************/
+    // Export to JSON
+    document.getElementById("exportBtn").addEventListener("click", () => {
+      const dataStr = JSON.stringify(assignments, null, 2);
+      const blob = new Blob([dataStr], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.setAttribute("href", url);
+      a.setAttribute("download", "duty_plan.json");
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+
+    // Export to CSV
+    document.getElementById("exportCsvBtn").addEventListener("click", exportXlsx);
+    function exportCsv() {
+      const csvRows = [];
+      // Build header row
+      const header = ["Day","MC","AC","NC","NO","PM","SpecOP","GenOP","Other","WOff","Leave"];
+      csvRows.push(header.join(","));
+
+      // Build rows for each day
+      days.forEach(day => {
+        const row = [];
+        row.push(day.name);
+        dutyTypes.forEach(duty => {
+          const docList = assignments[day.key][duty.name] || [];
+          row.push(docList.join(" / "));
+        });
+        csvRows.push(row.join(","));
+      });
+
+      const csvString = csvRows.join("\n");
+      const blob = new Blob([csvString], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.setAttribute("href", url);
+      a.setAttribute("download", "duty_plan.csv");
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+  async function exportXlsx() {
+    try {
+    // 1. Load a blank workbook
+    const workbook = await XlsxPopulate.fromBlankAsync();
+    const sheet = workbook.sheet(0);
+
+    // 2. Build data arrays
+    const header = ["Day","MC","AC","NC","NO","PM","SpecOP","GenOP","Other","WOff","Leave"];
+    
+    // Write the header row (row #1)
+    header.forEach((colName, colIndex) => {
+      sheet.cell(1, colIndex + 1).value(colName);
+    });
+    
+    let startDate = getNextMonday();
+    // Write each day's row
+    days.forEach((day, dayIndex) => {
+      if (dayIndex == 0) {
+        return;
+      }
+      const excelRow = dayIndex + 1; // Because row 1 is the header and lets ignore prev sunday
+      // First column: Day name
+      sheet.cell(excelRow, 1).value(`${day.name} (${addDaysAndFormatDDMM(startDate, dayIndex - 1)})`); // prev sunday, Monday.
+
+      // The rest of the columns: assignments
+      dutyTypes.forEach((duty, dutyIndex) => {
+        const col = dutyIndex + 2; // Because column 1 is "Day"
+        const docList = assignments[day.key][duty.name] || [];
+        sheet.cell(excelRow, col).value(docList.join(" / "));
+      });
+    });
+
+    // 3. Styling
+    // -------------------------------------------------
+    // a) Header row: grey background, bold
+    // b) Alternate fills for Day column vs other columns
+    // c) Global font size = 13, wrap text, and borders
+    // d) Set column widths
+
+    // (a) Style the header row (A1:K1 for 11 columns)
+    const headerRowRange = sheet.range("A1:K1");
+    headerRowRange.style({
+      fill: "CCCCCC",              // Grey background
+      bold: true,
+      horizontalAlignment: "center",
+      verticalAlignment: "center"
+      // We'll rely on a global fontSize/wrapText set below
+    });
+
+    // (b) Alternate row background colors
+    const lightBlue    = "ADD8E6";
+    const lightGreen   = "90EE90";
+    const lightYellow  = "FFFFE0";
+    const lightOrange  = "FFDAB9";
+
+    // For each row of data (row 2 onward)
+    for (let rowIndex = 2; rowIndex <= days.length + 1; rowIndex++) {
+      const isEven = (rowIndex % 2 === 0); // even or odd row index
+
+      // First column color (Day)
+      const dayCellColor = isEven ? lightBlue : lightGreen;
+      sheet.cell(rowIndex, 1).style({ fill: dayCellColor });
+
+      // Other columns (2..11) color
+      const otherCellColor = isEven ? lightYellow : lightOrange;
+      for (let colIndex = 2; colIndex <= 11; colIndex++) {
+        sheet.cell(rowIndex, colIndex).style({ fill: otherCellColor });
+      }
+    }
+
+    // (c) Apply borders, global font size, and wrapText to all used cells
+    const usedRange = sheet.usedRange(); 
+    usedRange.style({
+      fontSize: 13, // Global font size
+      wrapText: true,
+      border: {
+        top: { style: "thin", color: "000000" },
+        bottom: { style: "thin", color: "000000" },
+        left: { style: "thin", color: "000000" },
+        right: { style: "thin", color: "000000" }
+      }
+    });
+
+    // (d) Set column widths
+    for (let c = 1; c <= 11; c++) {
+      sheet.column(c).width(20); // 20 "characters" wide
+    }
+
+    // 4. Export the workbook as a blob
+    const blob = await workbook.outputAsync();
+
+    // 5. Trigger a download in the browser
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "duty_plan.xlsx";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("Error generating XLSX", err);
+  }
+}
+
+    // Import from JSON
+    document.getElementById("importBtn").addEventListener("click", () => {
+      const importSection = document.getElementById("importSection");
+      importSection.style.display = importSection.style.display === "none" ? "block" : "none";
+    });
+
+    document.getElementById("importConfirmBtn").addEventListener("click", () => {
+      const text = document.getElementById("importText").value.trim();
+      if (!text) return;
+      try {
+        const obj = JSON.parse(text);
+        assignments = obj;
+        buildDutyTable();
+        updateTableFromAssignments();
+        document.getElementById("importSection").style.display = "none";
+      } catch (e) {
+        alert("Invalid JSON: " + e.message);
+      }
+    });
+
+    window.addEventListener("DOMContentLoaded", init);
+  </script>
+</body>
+</html>
